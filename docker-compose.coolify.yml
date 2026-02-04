@@ -1,13 +1,13 @@
 version: "3.8"
 
 # ===========================================
-# QFieldCloud Standalone for Coolify
-# Simplified - no healthcheck conditions
+# QFieldCloud for Coolify
+# Internal PostgreSQL + External SeaweedFS
 # ===========================================
 
 services:
   # ===========================================
-  # PostgreSQL + PostGIS
+  # PostgreSQL + PostGIS (Internal)
   # ===========================================
   db:
     image: postgis/postgis:16-3.4-alpine
@@ -15,40 +15,15 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: qfieldcloud
-      POSTGRES_PASSWORD: qfieldcloud123
-      POSTGRES_DB: qfieldcloud_db
-
-  # ===========================================
-  # MinIO Object Storage
-  # ===========================================
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
-
-  # ===========================================
-  # MinIO Bucket Setup (runs once)
-  # ===========================================
-  createbuckets:
-    image: minio/mc:latest
-    restart: "no"
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      sleep 10;
-      mc alias set myminio http://minio:9000 minioadmin minioadmin123;
-      mc mb myminio/qfieldcloud-local --ignore-existing;
-      mc anonymous set download myminio/qfieldcloud-local/public;
-      echo 'Bucket created';
-      exit 0;
-      "
+      POSTGRES_USER: ${POSTGRES_USER:-qfieldcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qfieldcloud123}
+      POSTGRES_DB: ${POSTGRES_DB:-qfieldcloud_db}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qfieldcloud -d qfieldcloud_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ===========================================
   # Cache
@@ -64,48 +39,74 @@ services:
     image: ghcr.io/opengisch/qfieldcloud-app:latest
     restart: unless-stopped
     depends_on:
-      - db
-      - minio
-      - memcached
+      db:
+        condition: service_healthy
+      memcached:
+        condition: service_started
     volumes:
       - static_volume:/staticfiles/
       - media_volume:/mediafiles/
     environment:
-      DEBUG: "0"
-      ENVIRONMENT: production
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-random-string-here}
-      SALT_KEY: ${SALT_KEY:-change-me-also-use-random-string-here-too}
+      # Django Core
+      DEBUG: ${DEBUG:-0}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY}
+      SALT_KEY: ${SALT_KEY}
       DJANGO_SETTINGS_MODULE: qfieldcloud.settings
       DJANGO_ALLOWED_HOSTS: ${QFIELDCLOUD_HOST:-localhost} localhost 127.0.0.1 app
+
+      # Internal PostgreSQL
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: qfieldcloud
-      POSTGRES_PASSWORD: qfieldcloud123
-      POSTGRES_DB: qfieldcloud_db
+      POSTGRES_USER: ${POSTGRES_USER:-qfieldcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qfieldcloud123}
+      POSTGRES_DB: ${POSTGRES_DB:-qfieldcloud_db}
       POSTGRES_SSLMODE: disable
-      STORAGE_ACCESS_KEY_ID: minioadmin
-      STORAGE_SECRET_ACCESS_KEY: minioadmin123
-      STORAGE_BUCKET_NAME: qfieldcloud-local
-      STORAGE_ENDPOINT_URL: http://minio:9000
+
+      # SeaweedFS S3 Storage (External)
+      STORAGE_ACCESS_KEY_ID: ${SEAWEEDFS_ACCESS_KEY}
+      STORAGE_SECRET_ACCESS_KEY: ${SEAWEEDFS_SECRET_KEY}
+      STORAGE_BUCKET_NAME: ${SEAWEEDFS_BUCKET:-qfieldcloud}
+      STORAGE_ENDPOINT_URL: ${SEAWEEDFS_ENDPOINT:-http://s3-wk8c4o0g40o4gokooooosc48.setiu.link:8333}
       STORAGE_REGION_NAME: us-east-1
+
+      # Host Configuration
       QFIELDCLOUD_HOST: ${QFIELDCLOUD_HOST:-localhost}
-      QFIELDCLOUD_ADMIN_URI: admin/
-      EMAIL_HOST: localhost
-      EMAIL_PORT: "25"
-      EMAIL_USE_TLS: "False"
-      DEFAULT_FROM_EMAIL: noreply@localhost
-      GUNICORN_TIMEOUT_S: "300"
-      GUNICORN_MAX_REQUESTS: "300"
-      GUNICORN_WORKERS: "2"
-      GUNICORN_THREADS: "2"
+      QFIELDCLOUD_ADMIN_URI: ${QFIELDCLOUD_ADMIN_URI:-admin/}
+
+      # Email
+      EMAIL_HOST: ${EMAIL_HOST:-localhost}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-True}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-noreply@localhost}
+
+      # Gunicorn
+      GUNICORN_TIMEOUT_S: ${GUNICORN_TIMEOUT_S:-300}
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-300}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-3}
+
+      # Worker Config
       QFIELDCLOUD_WORKER_QFIELDCLOUD_URL: http://app:8000/api/v1/
+
+      # Memcached
       MEMCACHED_HOST: memcached
-      QFIELDCLOUD_DEFAULT_TIME_ZONE: Asia/Kuala_Lumpur
-      QFIELDCLOUD_DEFAULT_LANGUAGE: en
+
+      # Optional: Sentry
+      SENTRY_DSN: ${SENTRY_DSN:-}
+
+      # Localization
+      QFIELDCLOUD_DEFAULT_TIME_ZONE: ${QFIELDCLOUD_DEFAULT_TIME_ZONE:-Asia/Kuala_Lumpur}
+      QFIELDCLOUD_DEFAULT_LANGUAGE: ${QFIELDCLOUD_DEFAULT_LANGUAGE:-en}
     expose:
       - "8000"
     labels:
       - "coolify.port=8000"
+      - "ofelia.enabled=true"
+      - "ofelia.job-exec.runcrons.schedule=@every 1m"
+      - "ofelia.job-exec.runcrons.command=python manage.py runcrons"
 
   # ===========================================
   # Background Worker
@@ -115,38 +116,49 @@ services:
     restart: unless-stopped
     command: python manage.py dequeue
     depends_on:
-      - db
-      - app
-      - minio
+      db:
+        condition: service_healthy
+      app:
+        condition: service_started
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - transformation_grids:/transformation_grids/:ro
     environment:
-      DEBUG: "0"
-      ENVIRONMENT: production
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-random-string-here}
-      SALT_KEY: ${SALT_KEY:-change-me-also-use-random-string-here-too}
+      # Django Core
+      DEBUG: ${DEBUG:-0}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY}
+      SALT_KEY: ${SALT_KEY}
       DJANGO_SETTINGS_MODULE: qfieldcloud.settings
       DJANGO_ALLOWED_HOSTS: ${QFIELDCLOUD_HOST:-localhost} localhost 127.0.0.1 app
+
+      # Internal PostgreSQL
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
-      POSTGRES_USER: qfieldcloud
-      POSTGRES_PASSWORD: qfieldcloud123
-      POSTGRES_DB: qfieldcloud_db
+      POSTGRES_USER: ${POSTGRES_USER:-qfieldcloud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qfieldcloud123}
+      POSTGRES_DB: ${POSTGRES_DB:-qfieldcloud_db}
       POSTGRES_SSLMODE: disable
-      STORAGE_ACCESS_KEY_ID: minioadmin
-      STORAGE_SECRET_ACCESS_KEY: minioadmin123
-      STORAGE_BUCKET_NAME: qfieldcloud-local
-      STORAGE_ENDPOINT_URL: http://minio:9000
+
+      # SeaweedFS S3 Storage (External)
+      STORAGE_ACCESS_KEY_ID: ${SEAWEEDFS_ACCESS_KEY}
+      STORAGE_SECRET_ACCESS_KEY: ${SEAWEEDFS_SECRET_KEY}
+      STORAGE_BUCKET_NAME: ${SEAWEEDFS_BUCKET:-qfieldcloud}
+      STORAGE_ENDPOINT_URL: ${SEAWEEDFS_ENDPOINT:-http://s3-wk8c4o0g40o4gokooooosc48.setiu.link:8333}
       STORAGE_REGION_NAME: us-east-1
+
+      # Worker Config
       QFIELDCLOUD_WORKER_QFIELDCLOUD_URL: http://app:8000/api/v1/
       QFIELDCLOUD_QGIS_IMAGE_NAME: ghcr.io/opengisch/qfieldcloud-qgis:latest
       QFIELDCLOUD_DEFAULT_NETWORK: ${COMPOSE_PROJECT_NAME:-qfieldcloud}_default
+
+      # Memcached
       MEMCACHED_HOST: memcached
+
       TMP_DIRECTORY: /tmp
 
   # ===========================================
-  # Cron Scheduler
+  # Task Scheduler (Cron)
   # ===========================================
   ofelia:
     image: mcuadros/ofelia:latest
@@ -157,9 +169,23 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
+  # ===========================================
+  # Transformation Grids Mirror (run once)
+  # ===========================================
+  mirror_transformation_grids:
+    image: alpine:latest
+    restart: "no"
+    command: >
+      sh -c "apk add --no-cache wget &&
+             wget -r -np -nH --cut-dirs=0 -R 'index.html*' -P /transformation_grids https://cdn.proj.org/ &&
+             chmod -R a+r /transformation_grids"
+    volumes:
+      - transformation_grids:/transformation_grids
+    profiles:
+      - setup
+
 volumes:
   postgres_data:
-  minio_data:
   static_volume:
   media_volume:
   transformation_grids:
