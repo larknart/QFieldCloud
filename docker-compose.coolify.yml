@@ -46,6 +46,10 @@ services:
     volumes:
       - static_volume:/staticfiles/
       - media_volume:/mediafiles/
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn qfieldcloud.wsgi:application --bind 0.0.0.0:8000 --timeout $${GUNICORN_TIMEOUT_S:-300} --max-requests $${GUNICORN_MAX_REQUESTS:-300} --workers $${GUNICORN_WORKERS:-3} --threads $${GUNICORN_THREADS:-3}"
     environment:
       # Django Core
       DEBUG: ${DEBUG:-0}
