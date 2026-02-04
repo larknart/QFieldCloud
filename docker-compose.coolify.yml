@@ -94,6 +94,8 @@ services:
 
       # Worker Config
       QFIELDCLOUD_WORKER_QFIELDCLOUD_URL: http://app:8000/api/v1/
+      QFIELDCLOUD_QGIS_IMAGE_NAME: ghcr.io/opengisch/qfieldcloud-qgis:latest
+      QFIELDCLOUD_DEFAULT_NETWORK: ${COMPOSE_PROJECT_NAME:-qfieldcloud}_default
 
       # Memcached
       MEMCACHED_HOST: memcached
