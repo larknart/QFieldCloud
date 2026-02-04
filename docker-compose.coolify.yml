@@ -2,6 +2,24 @@ version: "3.8"
 
 services:
   # ===========================================
+  # PostgreSQL + PostGIS (Internal)
+  # ===========================================
+  db:
+    image: postgis/postgis:17-3.5-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-qfieldcloud}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-qfieldcloud_db}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-qfieldcloud} -d ${POSTGRES_DB:-qfieldcloud_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
   # Main Django Application
   # ===========================================
   app:
@@ -21,15 +39,15 @@ services:
       - DJANGO_SETTINGS_MODULE=qfieldcloud.settings
       - DJANGO_ALLOWED_HOSTS=${QFIELDCLOUD_HOST} localhost 127.0.0.1 app
 
-      # External PostgreSQL (postg.mds.gov.my)
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_USER=${POSTGRES_USER}
+      # Internal PostgreSQL
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-qfieldcloud}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB:-qfieldcloud_db}
-      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-prefer}
+      - POSTGRES_SSLMODE=disable
 
-      # S3/MinIO Storage
+      # SeaweedFS S3 Storage (External)
       - STORAGES=${STORAGES}
 
       # Host Configuration
@@ -63,7 +81,7 @@ services:
       - QFIELDCLOUD_DEFAULT_TIME_ZONE=${QFIELDCLOUD_DEFAULT_TIME_ZONE:-Asia/Kuala_Lumpur}
       - QFIELDCLOUD_DEFAULT_LANGUAGE=${QFIELDCLOUD_DEFAULT_LANGUAGE:-en}
     depends_on:
-      minio:
+      db:
         condition: service_healthy
       memcached:
         condition: service_started
@@ -98,15 +116,15 @@ services:
       - DJANGO_SETTINGS_MODULE=qfieldcloud.settings
       - DJANGO_ALLOWED_HOSTS=${QFIELDCLOUD_HOST} localhost 127.0.0.1 app
 
-      # External PostgreSQL
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_USER=${POSTGRES_USER}
+      # Internal PostgreSQL
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-qfieldcloud}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB:-qfieldcloud_db}
-      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-prefer}
+      - POSTGRES_SSLMODE=disable
 
-      # S3/MinIO Storage
+      # SeaweedFS S3 Storage (External)
       - STORAGES=${STORAGES}
 
       # Worker Config
@@ -119,8 +137,10 @@ services:
 
       - TMP_DIRECTORY=/tmp
     depends_on:
-      - app
-      - minio
+      db:
+        condition: service_healthy
+      app:
+        condition: service_started
 
   # ===========================================
   # QGIS Processing Engine
@@ -172,60 +192,11 @@ services:
     expose:
       - "11211"
 
-  # ===========================================
-  # MinIO Object Storage
-  # ===========================================
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-    expose:
-      - "9000"  # API
-      - "9001"  # Console
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  # ===========================================
-  # MinIO Bucket Setup (run once)
-  # ===========================================
-  createbuckets:
-    image: minio/mc:latest
-    restart: "no"
-    entrypoint: >
-      /bin/sh -c "
-      sleep 5;
-      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
-      mc mb myminio/$${MINIO_BUCKET_NAME:-qfieldcloud-data} --ignore-existing;
-      mc anonymous set download myminio/$${MINIO_BUCKET_NAME:-qfieldcloud-data}/public;
-      mc admin user add myminio $${MINIO_ACCESS_KEY} $${MINIO_SECRET_KEY};
-      mc admin policy attach myminio readwrite --user $${MINIO_ACCESS_KEY};
-      echo 'Bucket setup complete';
-      "
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
-      - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-qfieldcloud-data}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-    depends_on:
-      minio:
-        condition: service_healthy
-    profiles:
-      - setup
-
 volumes:
+  postgres_data:
   static_volume:
   media_volume:
   transformation_grids:
-  minio_data:
 
 networks:
   default:
